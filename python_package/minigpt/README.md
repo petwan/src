@@ -1,5 +1,14 @@
 # minigpt
 
+> 执行代码
+```bash
+# 1. 创建词表
+python ./minigpt/build_vocab.py --data ./data/data.jsonl --output ./data/vocab.json
+# 2. 拆分数据集
+python ./minigpt/split_data.py --input ./data/data.jsonl --train_ratio 0.8
+# 3. 训练模型
+python ./minigpt/train.py
+```
 ## 1. 构建词表
 
 ### 1.1 `build_vocab.py` — 词表构建工具
@@ -43,13 +52,141 @@ python ./minigpt/build_vocab.py --data ./data/data.jsonl --output ./data/vocab.j
 
 > **注意**：如果更新了数据集，需要重新运行此脚本以更新词表。
 
-TODO: 添加代码
+```python
+import enum
+import json
+import argparse
+from collections import Counter
+
+
+def build_vocab(data_path: str, output_path: str):
+    counter = Counter()
+
+    with open(data_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                item = json.loads(line)
+                # 收集 question 和 answer 中的所有字符
+                counter.update(item["question"])
+                counter.update(item["answer"])
+            except Exception as e:
+                print(f"Warning: skip invalid line: {line[:50]}... | Error: {e}")
+
+    # 获取所有唯一字符
+    chars = sorted(counter.keys())
+
+    # 添加特殊 token
+    special_tokens = ["<pad>", "<unk>", "<sep>"]
+
+    # 构建 word2id：先放特殊 token，再放字符（顺序固定便于复现）
+    word2id = {token: i for i, token in enumerate(special_tokens)}
+    for char in chars:
+        if char not in special_tokens:  # 防御：跳过特殊 token
+            word2id[char] = len(word2id)  # 自动递增
+
+    # 构建 id2word
+    id2word = {i: token for token, i in word2id.items()}
+
+    vocab = {"word2id": word2id, "id2word": id2word}
+
+    # 保存 vocab
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(vocab, f, ensure_ascii=False, indent=4)
+
+    print(f"✅ Vocabulary built and saved to {output_path}")
+    print(f"   Total tokens: {len(word2id)}")
+    print(f"   Special tokens: {special_tokens}")
+    print(f"   Sample chars: {chars[:10]}...")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Build vocabulary from QA dataset.")
+    parser.add_argument(
+        "--data", type=str, required=True, help="Path to training data (JSONL format)"
+    )
+    parser.add_argument(
+        "--output", type=str, default="vocab.json", help="Output vocab file path"
+    )
+    args = parser.parse_args()
+
+    build_vocab(args.data, args.output)
+```
 
 ## 2. tokenizer
 
 在构建词表后，创建对应的 Tokenizer 类，用于将文本转换为模型可处理的 token ID 序列。
 
-TODO: 添加代码
+```python
+import json
+import token
+
+
+class Tokenizer:
+    def __init__(self, vocab_path: str):
+        with open(vocab_path, "r", encoding="utf-8") as f:
+            vocab = json.load(f)
+
+        self.word2id = vocab["word2id"]
+        self.id2word = {int(k): v for k, v in vocab["id2word"].items()}
+
+        # 固定特殊 token ID
+        self.pad_token_id = self.word2id["<pad>"]
+        self.unk_token_id = self.word2id["<unk>"]
+        self.sep_token_id = self.word2id["<sep>"]
+
+    def encode(
+        self,
+        question: str,
+        answer: str,
+        max_length: int = 128,
+        pad_to_max_length: bool = True,
+    ):
+        """将问答对编码为 token ID 序列。"""
+        tokens = []
+
+        # encode question
+        for char in question:
+            tokens.append(self.word2id.get(char, self.unk_token_id))
+        tokens.append(self.sep_token_id)  # 添加分隔符
+
+        # encode answer
+        if answer is not None:
+            for char in answer:
+                tokens.append(self.word2id.get(char, self.unk_token_id))
+
+            tokens.append(self.sep_token_id)
+
+        # 构建 attention mask（1=真实 token，0=padding）
+        attn_mask = [1] * len(tokens)
+
+        # 截断或填充
+        if pad_to_max_length:
+            if len(tokens) > max_length:
+                # 截断（保留开头）
+                tokens = tokens[:max_length]
+                attn_mask = attn_mask[:max_length]
+            else:
+                # 填充
+                pad_len = max_length - len(tokens)
+                tokens.extend([self.pad_token_id] * pad_len)
+                attn_mask.extend([0] * pad_len)
+
+        return tokens, attn_mask
+
+    def decode(self, ids):
+        """将 token ID 列表解码为原始文本（跳过 <pad>）。"""
+        return "".join(
+            self.id2word[i] for i in ids if i != self.pad_token_id  # 跳过填充符
+        )
+
+    def get_vocab_size(self):
+        return len(self.id2word)
+
+```
 
 测试一下：
 ```python
@@ -72,13 +209,187 @@ if __name__ == "__main__":
 ## 3. 拆分数据集
 我们将数据集拆分为训练集和验证集，并保存为 JSONL 文件。
 
+```python
+# split_data.py
+import json
+import argparse
+import random
+from pathlib import Path
+
+
+def split_jsonl_data(input_path: str, train_ratio: float = 0.9, seed: int = 42):
+    """
+    将 JSONL 格式的 QA 数据集划分为 train.jsonl 和 val.jsonl。
+
+    Args:
+        input_path (str): 原始数据路径（JSONL）
+        train_ratio (float): 训练集比例（0.0 ～ 1.0）
+        seed (int): 随机种子，确保可复现
+    """
+    input_path = Path(input_path)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    # 读取所有有效行
+    data = []
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+                if "question" in item and "answer" in item:
+                    data.append(line)  # 保留原始字符串，避免格式变化
+                else:
+                    print(
+                        f"⚠️  Warning: Line {line_num} missing 'question' or 'answer', skipped."
+                    )
+            except json.JSONDecodeError:
+                print(f"⚠️  Warning: Line {line_num} is invalid JSON, skipped.")
+
+    if not data:
+        raise ValueError("No valid data found!")
+
+    # 打乱并划分
+    random.seed(seed)
+    random.shuffle(data)
+    n_train = int(len(data) * train_ratio)
+
+    train_data = data[:n_train]
+    val_data = data[n_train:]
+
+    # 输出路径
+    output_dir = input_path.parent
+    train_path = output_dir / "train.jsonl"
+    val_path = output_dir / "val.jsonl"
+
+    # 写入文件
+    with open(train_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(train_data) + "\n")
+    with open(val_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(val_data) + "\n")
+
+    print(f"✅ Split completed!")
+    print(f"   Total samples: {len(data)}")
+    print(f"   Train: {len(train_data)} → {train_path}")
+    print(f"   Val:   {len(val_data)} → {val_path}")
+    print(f"   Train ratio: {train_ratio:.1%}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Split QA dataset into train/val sets."
+    )
+    parser.add_argument(
+        "--input",
+        type=str,
+        required=True,
+        help="Path to original JSONL dataset (e.g., data/all.jsonl)",
+    )
+    parser.add_argument(
+        "--train_ratio",
+        type=float,
+        default=0.9,
+        help="Proportion of data to use for training (default: 0.9)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility (default: 42)",
+    )
+    args = parser.parse_args()
+
+    split_jsonl_data(args.input, args.train_ratio, args.seed)
+```
+
 ```bash
 python ./minigpt/split_data.py --input ./data/data.jsonl --train_ratio 0.8
 ```
 
-
 ## 4. 构建Dataset
 构建一个自定义的 PyTorch Dataset 类，用于加载数据集并生成输入序列和标签。
+
+```python
+import torch
+from torch.utils.data import Dataset, DataLoader
+import json
+from minigpt.tokenizer import Tokenizer
+
+
+class QADataset(Dataset):
+    """
+    自回归训练用的问答数据集（Question-Answer Dataset）。
+
+    将 (question, answer) 拼接为单个序列，并构造：
+      - input_ids:   [SOS, q1, q2, ..., <sep>, a1, a2, ..., <sep>]
+      - targets:     [q1, q2, ..., <sep>, a1, a2, ..., <sep>, EOS]
+
+    实际通过 shift 实现：input = tokens[:-1], target = tokens[1:]
+    """
+
+    def __init__(self, data_path: str, tokenizer: Tokenizer, max_length: int):
+        self.tokeniner = tokenizer
+        self.max_length = max_length
+        self.data = []
+
+        print(f"Loading data from {data_path}")
+
+        with open(data_path, "r", encoding="utf-8") as f:
+            # 逐行读取数据, 行数从1开始
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    item = json.loads(line)
+                    if "question" not in item or "answer" not in item:
+                        print(
+                            f"⚠️  Line {line_num}: Missing 'question' or 'answer', skipped."
+                        )
+                        continue
+                    self.data.append((item["question"], item["answer"]))
+
+                except Exception as e:
+                    print(f"⚠️  Line {line_num}: Invalid JSON, skipped. Error: {e}")
+
+        print(f"✅ Loaded {len(self.data)} valid QA pairs.")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        question, answer = self.data[idx]
+        # encode question and answer
+        full_tokens, atnn_mask = self.tokeniner.encode(
+            question, answer, max_length=self.max_length
+        )
+
+        # 自回归训练： input 向右移一位，target 向左移一位
+        input_ids = full_tokens[:-1]  # 去掉最后一个 token
+        attention_mask = atnn_mask[:-1]  # 对应 input_ids 的 attention mask
+        targets = full_tokens[1:]  # 去掉第一个 token
+
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "targets": torch.tensor(targets, dtype=torch.long),
+        }
+
+
+if __name__ == "__main__":
+    tokenizer = Tokenizer("./data/vocab.json")
+    dataset = QADataset("./data/train.jsonl", tokenizer, max_length=128)
+
+    print(f"数据集大小：{len(dataset)}")
+
+    item = dataset[0]
+    print(item)
+    print(tokenizer.decode(item["input_ids"].tolist()))
+    print(tokenizer.decode(item["targets"].tolist()))
+```
 
 测试一下
 ```python
@@ -128,7 +439,7 @@ class GPTConfig:
     n_head: int = 8  # 多头注意力头数（必须整除 n_embd）
     n_layer: int = 6  # Transformer block 层数
     dropout: float = 0.1  # 所有 dropout 层的丢弃率
-    block_size: int = 1024  # 最大上下文长度（位置编码最大支持长度）
+    block_size: int = 128  # 最大上下文长度（位置编码最大支持长度）
     vocab_size: int = 4825  # 词表大小（根据实际 tokenizer 决定
 
 
@@ -404,3 +715,208 @@ class GPTLMHeadModel(nn.Module):
         return logits
 ```
 
+## 7. 模型训练
+```python
+import torch
+from minigpt.qa_dataset import QADataset
+from minigpt.tokenizer import Tokenizer
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+import torch.nn as nn
+import os
+from minigpt.model import GPTLMHeadModel, GPTConfig
+from tqdm import tqdm
+
+
+def train_epoch(model, train_loader, optimizer, criterion, device):
+    model.train()
+    total_loss = 0
+    num_batches = len(train_loader)
+
+    progress_bar = tqdm(
+        enumerate(train_loader),
+        total=num_batches,
+        desc="  Train",
+        leave=False,
+        unit="batch",
+    )
+
+    for batch_idx, batch in progress_bar:
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        targets = batch["targets"].to(device, non_blocking=True)
+
+        optimizer.zero_grad()
+        logits = model(input_ids=input_ids, attention_mask=attention_mask)
+        loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
+
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
+
+    return total_loss / num_batches
+
+
+@torch.no_grad()
+def validate(model, val_loader, criterion, device):
+    model.eval()
+    total_loss = 0
+    num_batches = len(val_loader)
+
+    progress_bar = tqdm(
+        enumerate(val_loader),
+        total=num_batches,
+        desc="  Val",
+        leave=False,
+        unit="batch",
+    )
+
+    for batch_idx, batch in progress_bar:
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        targets = batch["targets"].to(device, non_blocking=True)
+
+        logits = model(input_ids=input_ids, attention_mask=attention_mask)
+        loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
+        total_loss += loss.item()
+        progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
+
+    return total_loss / num_batches
+
+
+def save_checkpoint(model, optimizer, epoch, path):
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        },
+        path,
+    )
+
+
+def train_model(
+    model,
+    train_loader,
+    val_loader,
+    optimizer,
+    criterion,
+    device,
+    num_epochs,
+    model_output_dir,
+    writer,
+):
+    os.makedirs(model_output_dir, exist_ok=True)
+    best_val_loss = float("inf")
+
+    for epoch in range(1, num_epochs + 1):
+        print(f"\nEpoch {epoch}/{num_epochs}")
+
+        # Training
+        train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
+        print(f"  Train Loss: {train_loss:.4f}")
+
+        # Validation
+        val_loss = validate(model, val_loader, criterion, device)
+        print(f"  Val Loss:   {val_loss:.4f}")
+
+        # Log to TensorBoard
+        if writer is not None:
+            writer.add_scalar("Loss/train", train_loss, epoch)
+            writer.add_scalar("Loss/val", val_loss, epoch)
+
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_path = os.path.join(model_output_dir, "best_model.pth")
+            save_checkpoint(model, optimizer, epoch, best_path)
+            print(f"  🎉 New best model saved (val loss: {val_loss:.4f})")
+
+    print(f"\n✅ Training finished. Best validation loss: {best_val_loss:.4f}")
+
+
+def main():
+    # 配置路径
+    train_path = "./data/train.jsonl"
+    val_path = "./data/val.jsonl"
+    vocab_path = "./data/vocab.json"
+
+    # 超参数
+    max_length = 128
+    batch_size = 32
+    lr = 1e-4
+    epochs = 15
+
+    # 设备设置
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    if device.type == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+    # 加载 tokenizer 和模型
+    tokenizer = Tokenizer(vocab_path)
+    config = GPTConfig(vocab_size=tokenizer.get_vocab_size())
+    model = GPTLMHeadModel(config).to(device)
+
+    # 数据集
+    train_dataset = QADataset(train_path, tokenizer, max_length)
+    val_dataset = QADataset(val_path, tokenizer, max_length)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=2,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+    # 优化器与损失函数
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
+
+    # TensorBoard 日志
+    writer = SummaryWriter("runs/minigpt")
+
+    # 开始训练
+    train_model(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        criterion=criterion,
+        device=device,
+        num_epochs=epochs,
+        model_output_dir="output",
+        writer=writer,
+    )
+
+    writer.close()
+    print("\n🎉 Training pipeline completed.")
+
+
+if __name__ == "__main__":
+    main()
+
+```
+
+```bash
+python ./minigpt/train.py
+```
+
+## 8. 生成回答
+
+
+## X. Qwen3
+Qwen3的代码结构学习，详见 minigpt/qwen3 代码。

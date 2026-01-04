@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Roboto+Slab:wght@400;700&display=swap');
+@import './table.css';
+@import './vp-code.css';
+
+:root {
+  --vp-font-family-mono: 'Cascadia Code', source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+  /* 设置基础字体 */
+  --vp-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    /* 设置标题字体 */
+  --vp-font-family-heading: 'Roboto Slab', Georgia, serif;
+  /* 为中文优化字体 */
+  --vp-font-family-mono: 'Cascadia Code', source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+}
+
+
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #bd34fe, #41d1ff);
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #bd34fe 50%, #47caff 50%);
+  --vp-home-hero-image-filter: blur(40px);
+}
+
+/* VPFeatures 卡片悬浮动效 */
+.VPFeatures .items .item {
+  transition: transform 0.3s;
+}
+.VPFeatures .items .item:hover {
+  transform: translateY(-5px);
+}
+
+/* blockquote */
+.vp-doc blockquote {
+    border-left: 6px solid var(--vp-c-brand-2); /* 在引用块左侧添加一条绿色实线边框 */
+}
+
+/* 显式应用到代码元素（双重保险） */
+.vp-doc code,
+/* .vp-doc pre, */
+.vp-doc kbd,
+.vp-doc samp {
+  font-family: var(--vp-font-family-mono);
+}
+
+/* 为中文内容设置合适的字体回退 */
+.zh-font {
+  font-family: var(--vp-font-family-base);
+}
+
