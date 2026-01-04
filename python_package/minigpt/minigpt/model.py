@@ -17,7 +17,7 @@ class GPTConfig:
     n_head: int = 8  # 多头注意力头数（必须整除 n_embd）
     n_layer: int = 6  # Transformer block 层数
     dropout: float = 0.1  # 所有 dropout 层的丢弃率
-    block_size: int = 1024  # 最大上下文长度（位置编码最大支持长度）
+    block_size: int = 128  # 最大上下文长度（位置编码最大支持长度）
     vocab_size: int = 4825  # 词表大小（根据实际 tokenizer 决定
 
 
@@ -87,17 +87,17 @@ class CausalSelfAttention(nn.Module):
             # 逻辑与：只有同时满足“非 padding”和“在左侧”才为 True
             attn_mask = causal_mask & key_padding_mask  # [B, 1, T, T]
 
-            # === 步骤4: 高效注意力计算 ===
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=attn_mask,
-                dropout_p=self.config.dropout if self.training else 0,
-                is_causal=False,  # NOTE：我们已手动构建因果掩码，故设为 False
-            )
+        # === 步骤4: 高效注意力计算 ===
+        y = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=self.config.dropout if self.training else 0,
+            is_causal=False,  # NOTE：我们已手动构建因果掩码，故设为 False
+        )
 
-            # 输出 y: [B, n_head, T, head_dim]
+        # 输出 y: [B, n_head, T, head_dim]
 
         # === 步骤5: 合并多头并投影 ===
         # 转置回 [B, T, n_head, head_dim] -> 合并最后两维 -> [B, T, C]
@@ -300,7 +300,6 @@ class GPTLMHeadModel(nn.Module):
         temperature: float = 1.0,
         top_k: Optional[int] = None,
         do_sample: bool = False,
-        pad_token_id: Optional[int] = None,
     ):
         """
         标准自回归文本生成方法（支持多种解码策略）
@@ -326,9 +325,6 @@ class GPTLMHeadModel(nn.Module):
                 完整生成序列，形状 [batch_size, seq_len + new_tokens]
         """
         self.eval()
-
-        device = input_ids.device
-        batch_size = input_ids.shape[0]
 
         stop_tokens = set()
         if stop_token_ids is not None:

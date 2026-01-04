@@ -6,6 +6,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch.nn as nn
 import os
 from minigpt.model import GPTLMHeadModel, GPTConfig
+from tqdm import tqdm
 
 
 def train_epoch(model, train_loader, optimizer, criterion, device):
@@ -13,20 +14,29 @@ def train_epoch(model, train_loader, optimizer, criterion, device):
     total_loss = 0
     num_batches = len(train_loader)
 
-    for batch in train_loader:
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        targets = batch["targets"].to(device)
+    progress_bar = tqdm(
+        enumerate(train_loader),
+        total=num_batches,
+        desc="  Train",
+        leave=False,
+        unit="batch",
+    )
+
+    for batch_idx, batch in progress_bar:
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        targets = batch["targets"].to(device, non_blocking=True)
 
         optimizer.zero_grad()
         logits = model(input_ids=input_ids, attention_mask=attention_mask)
-        # logits shape: [Batch, Len, vocab_size], targets: [Batch, Len]
         loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
 
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
+        progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
+
     return total_loss / num_batches
 
 
@@ -36,14 +46,23 @@ def validate(model, val_loader, criterion, device):
     total_loss = 0
     num_batches = len(val_loader)
 
-    for batch in val_loader:
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        targets = batch["targets"].to(device)
+    progress_bar = tqdm(
+        enumerate(val_loader),
+        total=num_batches,
+        desc="  Val",
+        leave=False,
+        unit="batch",
+    )
+
+    for batch_idx, batch in progress_bar:
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        targets = batch["targets"].to(device, non_blocking=True)
 
         logits = model(input_ids=input_ids, attention_mask=attention_mask)
         loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
         total_loss += loss.item()
+        progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
 
     return total_loss / num_batches
 
@@ -74,53 +93,55 @@ def train_model(
     best_val_loss = float("inf")
 
     for epoch in range(1, num_epochs + 1):
-        print(f"Epoch {epoch}/{num_epochs}")
+        print(f"\nEpoch {epoch}/{num_epochs}")
 
-        # train
+        # Training
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
-
         print(f"  Train Loss: {train_loss:.4f}")
 
-        # val
+        # Validation
         val_loss = validate(model, val_loader, criterion, device)
+        print(f"  Val Loss:   {val_loss:.4f}")
 
-        print(f"  Val Loss: {val_loss:.4f}")
-
-        # log to tensorboard
+        # Log to TensorBoard
         if writer is not None:
             writer.add_scalar("Loss/train", train_loss, epoch)
             writer.add_scalar("Loss/val", val_loss, epoch)
 
-        # save best model
+        # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_path = os.path.join(model_output_dir, "best_model.pth")
             save_checkpoint(model, optimizer, epoch, best_path)
             print(f"  🎉 New best model saved (val loss: {val_loss:.4f})")
 
-    print(f"\n✅ Training finished. Best val loss: {best_val_loss:.4f}")
+    print(f"\n✅ Training finished. Best validation loss: {best_val_loss:.4f}")
 
 
 def main():
+    # 配置路径
     train_path = "./data/train.jsonl"
     val_path = "./data/val.jsonl"
     vocab_path = "./data/vocab.json"
 
+    # 超参数
     max_length = 128
-    batch_size = 32
+    batch_size = 64
     lr = 1e-4
     epochs = 15
+
+    # 设备设置
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    if device.type == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-    # load tokenizer and model
+    # 加载 tokenizer 和模型
     tokenizer = Tokenizer(vocab_path)
-
-    # load model
     config = GPTConfig(vocab_size=tokenizer.get_vocab_size())
-    model = GPTLMHeadModel(config)
+    model = GPTLMHeadModel(config).to(device)
 
-    # datasets
+    # 数据集
     train_dataset = QADataset(train_path, tokenizer, max_length)
     val_dataset = QADataset(val_path, tokenizer, max_length)
 
@@ -142,12 +163,14 @@ def main():
         drop_last=True,
     )
 
-    # optimizer
+    # 优化器与损失函数
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
 
-    # train
+    # TensorBoard 日志
     writer = SummaryWriter("runs/minigpt")
+
+    # 开始训练
     train_model(
         model=model,
         train_loader=train_loader,
@@ -159,7 +182,9 @@ def main():
         model_output_dir="output",
         writer=writer,
     )
+
     writer.close()
+    print("\n🎉 Training pipeline completed.")
 
 
 if __name__ == "__main__":

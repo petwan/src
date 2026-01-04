@@ -50,12 +50,13 @@ def main():
     vocab_path = "./data/vocab.json"
     max_length = 120  # 注意：现在这个值用于控制总长度（见上）
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_path = "output/best.pt"
+    model_path = "output/best_model.pth"
 
     tokenizer = Tokenizer(vocab_path)
     config = GPTConfig(vocab_size=tokenizer.get_vocab_size())
     model = GPTLMHeadModel(config).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])  # ← 关键！
     model.eval()
 
     while True:
@@ -64,3 +65,7 @@ def main():
             break
         answer = generate(model, tokenizer, question, max_length, device)
         print("A:", answer)
+
+
+if __name__ == "__main__":
+    main()

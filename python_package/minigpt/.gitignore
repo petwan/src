@@ -2,3 +2,8 @@ __pycache__
 
 *.py[cod]
 
+output/
+runs/
+data/
+
+.ruff_cache/

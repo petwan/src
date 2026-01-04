@@ -58,7 +58,7 @@ def split_jsonl_data(input_path: str, train_ratio: float = 0.9, seed: int = 42):
     with open(val_path, "w", encoding="utf-8") as f:
         f.write("\n".join(val_data) + "\n")
 
-    print(f"✅ Split completed!")
+    print("✅ Split completed!")
     print(f"   Total samples: {len(data)}")
     print(f"   Train: {len(train_data)} → {train_path}")
     print(f"   Val:   {len(val_data)} → {val_path}")
