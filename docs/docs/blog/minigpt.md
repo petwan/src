@@ -1,63 +1,39 @@
-# minigpt
+---
+title: ⚡MiniGPT —— 基于代码理解 transformer
+date: 2026-01-05
+tags: [LLMs, Pytorch]
+description: 使用 Pytorch 从零构建词表、构建 decoder-only 的 类GPT-2 模型，从 0 到 1 实现一个自定义的对话模型。模型整体 Transformer Only Decoder 作为核心架构，由多个相同的层堆叠而成，每个层包括自注意力机制、位置编码和前馈神经网络。
+draft: false
+---
 
-> 执行代码
-```bash
-# 1. 创建词表
-python ./minigpt/build_vocab.py --data ./data/data.jsonl --output ./data/vocab.json
-# 2. 拆分数据集
-python ./minigpt/split_data.py --input ./data/data.jsonl --train_ratio 0.8
-# 3. 查看token长度统计
-```bash
-python ./minigpt/dataset_stats.py   --train_data ./data/train.jsonl   --vocab_path ./data/vocab.json
+# ⚡MiniGPT —— 基于代码理解 transformer
+
+> 这是一篇记录自己理解 transformer 模型的笔记，主要是使用Pytorch实现一个基础的 GPT-2 模型。
+
+## 1. 数据集
+使用对话-百科（中文）数据集，涵盖了美食、城市、企业家、汽车、明星八卦、生活常识、日常对话 等信息。数据集下载地址：[here](https://modelscope.cn/datasets/qiaojiedongfeng/qiaojiedongfeng/summary)
+
+> 这个数据集在 minigpt 的代码中已经包含，可以直接使用。
+
+数据格式如下：
+```console
+{"question": "你好，最近怎么样？", "answer": "你好！我最近还不错，谢谢。"}
+{"question": "今天天气如何？", "answer": "今天的天气很晴朗。"}
+{"question": "你喜欢旅行吗？", "answer": "是的，我非常喜欢旅行。"}
+{"question": "你最喜欢的食物是什么？", "answer": "我最喜欢的食物是寿司。"}
+{"question": "你有什么兴趣爱好？", "answer": "我喜欢阅读和运动。"}
+{"question": "你最喜欢的电影是什么？", "answer": "我最喜欢的电影是《肖申克的救赎》。"}
 ```
-# 3. 训练模型
-python ./minigpt/train.py
-```
-## 1. 构建词表
 
-### 1.1 `build_vocab.py` — 词表构建工具
+## 2. 构建词表
+因为数据集是中文，所以这里用一个字作为一个词，并在这个基础上把标点符号以及表情符号都纳入词表中。同时，词表中还需要三个特殊的词： `<pad>`用于表示占位、`<unk>` 用于表示未知、 `<sep>`表示分隔符，用于分隔 question 和 answer。
 
-这个示例中，先按照中文字符生成词表，具体如下：
-- **分词单位**：每一个**单字**（包括汉字、标点、数字、英文字母等）作为一个 token。
 - **示例**：
   - 文本：`"你好吗？"`
   - 分词结果：`["你", "好", "吗", "？"]`
   - 每个字对应一个 ID
 
-- **特殊 Token**：
-  - `<pad>`：填充
-  - `<unk>`：未登录字（理论上不会出现，因为你用全训练集构建词表）
-  - `<sep>`：分隔符（用于分隔 question 和 answer）
-
-
-用于从问答（QA）数据集中提取所有字符，并生成模型训练所需的词表文件 `vocab.json`。该词表将被 `Tokenizer` 类加载，用于将文本转换为模型可处理的 token ID 序列。
-
-**输入数据格式**
-脚本要求输入文件为 **JSONL（JSON Lines）格式**，即每行包含一个独立的 JSON 对象，且必须包含 `question` 和 `answer` 字段。
-
-**示例 (`data/data.json`)**：
-```json
-{"question": "你好，最近怎么样？", "answer": "我很好，谢谢！"}
-{"question": "你喜欢旅行吗？", "answer": "是的，我非常喜欢。"}
-```
-> ⚠️ 注意：不是整个文件是一个 JSON 数组，而是**每行一个 JSON 对象**。
-
-```bash
-python build_vocab.py --data <训练数据路径> [--output <输出路径>]
-```
-
-```bash
-python ./minigpt/build_vocab.py --data ./data/data.jsonl --output ./data/vocab.json
-```
-
-- **特殊 token 固定包含**：`<pad>`（填充）、`<unk>`（未知字符）、`<sep>`（分隔符）
-- 所有中文字符、标点、数字、字母等均按 Unicode 排序后分配 ID
-- 词表大小 = 3（特殊 token） + 唯一字符数
-
-> **注意**：如果更新了数据集，需要重新运行此脚本以更新词表。
-
 ```python
-import enum
 import json
 import argparse
 from collections import Counter
@@ -119,14 +95,17 @@ if __name__ == "__main__":
 
     build_vocab(args.data, args.output)
 ```
+执行命令后将词表保存在data目录下，生成的词一共4825个，该词表将被 `Tokenizer` 类加载，用于将文本转换为模型可处理的 token ID 序列。
 
-## 2. tokenizer
+```bash
+python ./minigpt/build_vocab.py --data ./data/data.jsonl --output ./data/vocab.json
+```
 
-在构建词表后，创建对应的 Tokenizer 类，用于将文本转换为模型可处理的 token ID 序列。
+## 3. 创建 Tokenizer 类
+Tokenizer 类用于将输入的文本数据进行分词，并生成对应的索引序列，同时将模型的输出转换为可读文本。
 
 ```python
 import json
-import token
 
 
 class Tokenizer:
@@ -189,10 +168,9 @@ class Tokenizer:
 
     def get_vocab_size(self):
         return len(self.id2word)
-
 ```
 
-测试一下：
+使用一个简单的例子来测试这个类：
 ```python
 if __name__ == "__main__":
     question = "你好，最近怎么样？"
@@ -206,13 +184,11 @@ if __name__ == "__main__":
     """------ result ------
     [368, 1086, 4810, 2005, 4169, 1521, 240, 2103, 4816, 2, 1646, 1480, 1086, 4810, 3989, 3989, 4806, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     你好，最近怎么样？<sep>我很好，谢谢！<sep>
-    """"
-
+    """
 ```
 
-## 3. 拆分数据集
-我们将数据集拆分为训练集和验证集，并保存为 JSONL 文件。
-
+## 4. 划分数据
+将数据打乱后进行划分，这里我划分成80%训练集和20%验证集。
 ```python
 # split_data.py
 import json
@@ -274,7 +250,7 @@ def split_jsonl_data(input_path: str, train_ratio: float = 0.9, seed: int = 42):
     with open(val_path, "w", encoding="utf-8") as f:
         f.write("\n".join(val_data) + "\n")
 
-    print(f"✅ Split completed!")
+    print("✅ Split completed!")
     print(f"   Total samples: {len(data)}")
     print(f"   Train: {len(train_data)} → {train_path}")
     print(f"   Val:   {len(val_data)} → {val_path}")
@@ -308,16 +284,31 @@ if __name__ == "__main__":
     split_jsonl_data(args.input, args.train_ratio, args.seed)
 ```
 
+执行下面的命令拆分数据集，如果是在没有GPU资源或GPU显存不足的情况下，可以调整代码，取一小部分数据进行测试。
 ```bash
 python ./minigpt/split_data.py --input ./data/data.jsonl --train_ratio 0.8
 ```
 
-## 4. 构建Dataset
-构建一个自定义的 PyTorch Dataset 类，用于加载数据集并生成输入序列和标签。
+## 5. 查看训练数据的token统计
+
+执行如下代码，查看训练数据的token统计信息。
+```bash
+python ./minigpt/dataset_stats.py --train_data ./data/train.jsonl --vocab_path ./data/vocab.json
+```
+
+可以看到95%的token长度都在140以内，因此后面我们在后面训练的时候，可以将最大的输入长度设置为140。
+
+<Image 
+src='assets/minigpt_dataset_stats.png'
+card=true
+/>
+
+## 6. 创建 Dataset
+这里没有考虑太多优化的问题，仅做学习，因此创建的QADataset类比较简单。
 
 ```python
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import json
 from minigpt.tokenizer import Tokenizer
 
@@ -382,7 +373,6 @@ class QADataset(Dataset):
             "targets": torch.tensor(targets, dtype=torch.long),
         }
 
-
 if __name__ == "__main__":
     tokenizer = Tokenizer("./data/vocab.json")
     dataset = QADataset("./data/train.jsonl", tokenizer, max_length=128)
@@ -390,45 +380,305 @@ if __name__ == "__main__":
     print(f"数据集大小：{len(dataset)}")
 
     item = dataset[0]
-    print(item)
     print(tokenizer.decode(item["input_ids"].tolist()))
     print(tokenizer.decode(item["targets"].tolist()))
 ```
 
-测试一下
-```python
-if __name__ == "__main__":
-    tokenizer = Tokenizer("./data/vocab.json")
-    dataset = QADataset("./data/train.jsonl", tokenizer, max_length=128)
+我们看一下 idx 为 0 的样本中数据经过 decode 后的结果：
 
-    print(f"数据集大小：{len(dataset)}")
-
-    item = dataset[0]
-    print(item)
-    print(tokenizer.decode(item["input_ids"].tolist()))
-    print(tokenizer.decode(item["targets"].tolist()))
-"""
+```console
 枣树生长的产物分类为何类？<sep>枣树生长的产物属于果实类。<sep>
 树生长的产物分类为何类？<sep>枣树生长的产物属于果实类。<sep>
-"""
 ```
 
-## 5. 先把训练逻辑写好
+## 7. 模型搭建
+### 7.1 注意力机制背景
 
-TODO: 添加代码
+首先用一个最简单的例子说明注意力层
 
-## 6. GPTLMHeadModel
+- **Query**: 通过外卖App点外卖，个人的关注点是饭店口味是否麻辣和价格，例如 Query = [0.9, 0.8] 表示我希望饭店的‘麻辣程度’和‘便宜程度’都尽可能高。**为此，Key 的两个维度必须分别定义为‘越辣值越大’和‘越便宜值越大’。”** 简单理解，Query就是加权平均的权重。
 
-这里采用的是 decoder-only 的 GPT 模型，即只包含解码器部分，不包含编码器部分。
+- **Key**: 假设有三家饭店，每家饭店使用菜品麻辣程度和价格作为其饭店特征，例如 Key = [0.8, 0.7], 第一个维度表示饭店菜品的麻辣程度的得分（越辣得分越高），第二个维度表示饭店价格的便宜程度（值越接近1，表示饭店越便宜），这个要与Query 的理解一致。
 
-整体思路，经过Transformer模型后的 hidden_state 作为输入，给到一个nn.Linear 层，得到最终的输出。
+> 💡 用几个不恰当的例子（有个人主观因素😄）：
+> - 粤菜馆：Key = [0.1, 0.3]   不辣，价格较高 
+> - 川菜馆：Key = [0.9, 0.5]   麻辣，价格中等
+> - 日式餐厅：Key = [0.3, 0.1] 不辣，价格太贵
+
+- **Value**: 每个饭店能提供的有用信息，例如 Value = [0.9, 0.8] 可以表示用户综合评分0.9，出餐速度0.8。
+
+> 💡 Value 不需要与 Query 和 Key 的维度数量和含义保持一致，Value可以是任何有用的信息。
+
+**第一步：计算一下原始匹配分数**：
+
+$$
+\text{score}_i = \mathbf{q}^\top \mathbf{k}_i = 0.9 \cdot k_{i1} + 0.8 \cdot k_{i2}
+$$
+
+逐个计算：
+
+| 饭店      | 计算过程                                        | 原始分数 |
+| --------- | ----------------------------------------------- | -------- |
+| A（粤菜） | $0.9 \times 0.1 + 0.8 \times 0.3 = 0.09 + 0.24$ | **0.33** |
+| B（川菜） | $0.9 \times 0.9 + 0.8 \times 0.5 = 0.81 + 0.40$ | **1.21** |
+| C（日料） | $0.9 \times 0.3 + 0.8 \times 0.1 = 0.27 + 0.08$ | **0.35** |
+
+> 💡 川菜馆遥遥领先——又辣又相对便宜！
+
+**第二步：Softmax 归一化 → 注意力得分（权重）**
+
+$$
+\alpha_i = \frac{\exp(\text{score}_i)}{\exp(0.33) + \exp(1.21) + \exp(0.35)}
+$$
+
+先算指数（使用计算器，保留4位小数）：
+
+$$
+\begin{aligned}
+\exp(0.33) &\approx 1.3910 \\
+\exp(1.21) &\approx 3.3535 \\
+\exp(0.35) &\approx 1.4191 \\
+\text{总和} &= 1.3910 + 3.3535 + 1.4191 = 6.1636
+\end{aligned}
+$$
+
+再计算每个饭店的**注意力得分（Attention Score / Weight）**：
+
+| 饭店      | 公式          | 注意力得分（αᵢ） | 百分比    |
+| --------- | ------------- | ---------------- | --------- |
+| A（粤菜） | 1.3910/6.1636 | **0.2257**       | **22.6%** |
+| B（川菜） | 3.3535/6.1636 | **0.5441**       | **54.4%** |
+| C（日料） | 1.4191/6.1636 | **0.2302**       | **23.0%** |
+
+
+- **川菜馆获得超过一半（54.4%）的注意力**  
+  → 因为它最符合你“又辣又便宜”的偏好
+- **粤菜馆和日料馆各占约 1/4**  
+  → 虽然都不辣，但粤菜稍便宜（便宜程度 0.3 > 0.1），所以略高于日料
+
+> 这些注意力得分决定了后续聚合 Value 时的**话语权**：  
+> 川菜馆的评分和出餐速度对最终结果影响最大，之后将注意力得分乘以Value并求和后，得到的是一个上下文感知的推荐摘要 —— 不是某一家饭店，而是根据你的偏好动态融合三家饭店的综合表示，可以理解为是一个虚拟的饭店，用于指导后续的决策。
+
+接下来思考，如果我的考虑维度很多呢？比如我既关注价格，又关注麻辣口味，还关注健康等等，是否可以将这些偏好维度都放进Query中？
+
+理论上可以，但是实践上的效果可能不太好，因为维度太多，可能导致不同维度的相互干扰，所有的维度混在一起计算总的分数，导致最终的得分可能不是最合适的。
+
+多头的目的在这里就体现出来了，我可以设置多个头，每个头都关注几个维度，然后把多个头的结果进行拼接，得到一个更适合的表示。
+
+进一步解释（推理阶段的）KV缓存，因为个人的偏好 Query 可能会变，但是饭店的特征(Key/Value) 不会变，所以只要饭店没有换菜单，没调价，它们的 Key 和 Value 都不会变，所以可以缓存起来，下次查询的时候直接从缓存中取，省得重复计算。（这个例子实际上可能不太恰当，但是勉强可以理解）
+
+### 7.2 注意力机制实现
+
+回到miniGPT的实现上，我们把注意力机制的公式写一下：
+$$
+\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+$$
+
+这里需要注意，我们要在这个公式的基础上，增加注意力掩码，由于输入序列可能是不同的长度，但矩阵运算时需要固定的大小，因此针对长度不足的序列，使用padding作填充，但是这些padding的信息是没有意义的，因此需要将这些padding的位置的注意力掩码设置为0，这样在计算softmax的时候，这些位置的注意力分数就会变成0，从而被忽略。
+
 
 ```python
-from dataclasses import dataclass
-import torch.nn as nn
 import torch
-from typing import Optional
+import torch.nn as nn
+import numpy as np
+
+class ScaledDotProductAttention(nn.Module):
+    def __init__(self, d_k):
+        super(ScaledDotProductAttention, self).__init__()
+        self.d_k = d_k  # 输入的维度，用于计算缩放因子
+
+    def forward(self, q, k, v, attn_mask):
+        """
+        Args:
+            q: [batch_size, n_heads, len_q, d_k]
+            k: [batch_size, n_heads, len_k, d_k]
+            v: [batch_size, n_heads, len_v, d_v]  (注意: len_k == len_v)
+            attn_mask: [batch_size, n_heads, len_q, len_k] 或 None
+        Returns:
+            context: [batch_size, n_heads, len_q, d_v]
+            attn:    [batch_size, n_heads, len_q, len_k]
+        """
+        # step 1: 计算 QK^T / sqrt(d_k) shape: [batch_size, n_heads, len_q, len_k]
+        scores = torch.matmul(q, k.transpose(-1, -2)) / np.sqrt(self.d_k)
+
+        # step 2: 应用 attn_mask
+        if attn_mask is not None:
+            # masked_fill_: 将 mask=False 的位置替换为 -1e9
+            # 这里如果替换为0，后面的softmax计算时候，如果其他项的值也比较小
+            # 那么softmax之后的结果可能还有权重，所以设置一个很大的负数，可以避免这种情况
+            scores = scores.masked_fill(~attn_mask, -1e9)
+
+        # step 3: softmax 得到 attn
+        attn = nn.Softmax(dim=-1)(scores)  # shape: [batch_size, n_heads, len_q, len_k]
+
+        # step 4: attn * v
+        context = torch.matmul(attn, v)  # shape: [batch_size, n_heads, len_q, head_dim]
+
+        return context, attn
+
+
+if __name__ == "__main__":
+    # 用户偏好 Query
+    q = torch.tensor([[[[0.9, 0.8]]]])  # shape: [1, 1, 1, 2]
+
+    # 三家饭店的 Key: [麻辣程度, 便宜程度]
+    k = torch.tensor(
+        [[[[0.1, 0.3], [0.9, 0.5], [0.3, 0.1]]]]  # 粤菜馆  # 川菜馆  # 日式餐厅
+    )  # shape: [1, 1, 3, 2]
+
+    # 三家饭店的 Value: [评分, 出餐速度]
+    v = torch.tensor(
+        [[[[0.5, 0.9], [0.9, 0.6], [0.7, 0.8]]]]  # 粤菜馆  # 川菜馆  # 日式餐厅
+    )  # shape: [1, 1, 3, 2]
+
+    # 没有mask
+    mask = None
+
+    attention = ScaledDotProductAttention(d_k=2)
+
+    context, attn_weights = attention(q, k, v, mask)
+
+    print("=== Attention Weights (α) ===")
+    print(attn_weights.squeeze())  # shape: [3]
+
+    print("\n=== Output Context (Weighted Value) ===")
+    print(context.squeeze())  # shape: [2]
+```
+
+进一步验证一下，我不喜欢日式餐厅，直接屏蔽 `mask[:,:,:,2] = True`
+
+```python
+mask = torch.ones(1, 1, 1, 3, dtype=torch.bool)
+mask[:, :, :, 2] = False
+```
+
+### 7.3 多头注意力机制实现
+在上面的基础上，我们实现多头注意力机制
+```python {5-79}
+import torch
+import torch.nn as nn
+import numpy as np
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_heads, d_model, d_k, d_v):
+        super(MultiHeadAttention, self).__init__()
+        self.n_heads = n_heads
+        self.d_model = d_model
+        self.d_k = d_k
+        self.d_v = d_v
+
+        # 线性变换层
+        self.w_q = nn.Linear(d_model, n_heads * d_k, bias=False)
+        self.w_k = nn.Linear(d_model, n_heads * d_k, bias=False)
+        self.w_v = nn.Linear(d_model, n_heads * d_v, bias=False)
+
+        # 输出层
+        self.fc = nn.Linear(n_heads * d_v, d_model, bias=False)
+
+        # 注意力模块
+        self.attention = ScaledDotProductAttention(d_k)
+
+        # LayerNorm层
+        self.layer_norm = nn.LayerNorm(d_model)
+
+    def forward(self, q, k, v, attn_mask=None):
+        """
+        Args:
+            q: [batch_size, len_q, d_model]
+            k: [batch_size, len_k, d_model]
+            v: [batch_size, len_v, d_model]  (len_k == len_v)
+            attention_mask: [batch_size, len_q, len_k] or None
+        Returns:
+            output: [batch_size, len_q, d_model]
+            attn:   [batch_size, n_heads, len_q, len_k]
+        """
+        residual = q  # 残差连接
+        batch_size = q.size(0)
+
+        # 将q、k、v进行线性映射拆分
+        # [Batch_size, len_q, d_model] -> [Batch_size, len_q, n_heads, d_k]
+        q_proj = self.w_q(q).view(
+            batch_size, -1, self.n_heads, self.d_k
+        )  # [batch_size, len_q, n_heads, d_k]
+        k_proj = self.w_k(k).view(
+            batch_size, -1, self.n_heads, self.d_k
+        )  # [batch_size, len_k, n_heads, d_k]
+        v_proj = self.w_v(v).view(
+            batch_size, -1, self.n_heads, self.d_v
+        )  # [batch_size, len_v, n_heads, d_v]
+
+        # Transpose to [B, n_heads, Len_v, d_v]
+        q_proj = q_proj.transpose(1, 2)
+        k_proj = k_proj.transpose(1, 2)
+        v_proj = v_proj.transpose(1, 2)
+
+        if attn_mask is not None:  # 如果attn_mask不为None，则进行mask操作
+            # [B, Lq, Lk] -> [B, 1, Lq, Lk] -> [B, n_heads, Lq, Lk]
+            attn_mask = attn_mask.unsqueeze(1).expand(-1, self.n_heads, -1, -1)
+        else:
+            attn_mask = None
+
+        # scaled dot-product attention
+        context, attn = self.attention(q_proj, k_proj, v_proj, attn_mask)
+
+        # concat heads
+        # [batch_size, n_heads, len_q, d_v] -> [batch_size, len_q, n_heads * d_v]
+        context = (
+            context.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, -1, self.n_heads * self.d_v)
+        )
+
+        output = self.fc(context)
+
+        output = self.layer_norm(output + residual)
+
+        return output, attn
+
+
+if __name__ == "__main__":
+    # 模拟三家饭店的原始特征 [辣, 便宜, 健康, 评分]
+    # shape: [batch=1, seq_len=3, d_model=4]
+    k_v_input = torch.tensor(
+        [
+            [
+                [0.1, 0.3, 0.8, 0.5],  # 粤菜馆
+                [0.9, 0.5, 0.2, 0.9],  # 川菜馆
+                [0.3, 0.1, 0.9, 0.7],  # 日式餐厅
+            ]
+        ]
+    )
+
+    # Query：当前用户偏好（也用同样4维表示）
+    q_input = torch.tensor([[[0.9, 0.8, 0.3, 0.6]]])  # 我喜欢辣、便宜，不太在意健康
+
+    # 测试1: 无 mask
+    mha = MultiHeadAttention(n_heads=2, d_model=4, d_k=2, d_v=2)
+    output, attn_weights = mha(q_input, k_v_input, k_v_input, attn_mask=None)
+    print("=== No Mask ===")
+    print("Output shape:", output.shape)  # [1, 1, 4]
+    print("Attn shape:", attn_weights.shape)  # [1, 2, 1, 3]
+    print("Head 1 weights:", attn_weights[0, 0, 0].tolist())
+    print("Head 2 weights:", attn_weights[0, 1, 0].tolist())
+
+    # 测试2: 屏蔽日式餐厅 (index=2)
+    mask = torch.ones(1, 1, 3, dtype=torch.bool)
+    mask[0, 0, 2] = False  # False = 屏蔽
+    output2, attn_weights2 = mha(q_input, k_v_input, k_v_input, attn_mask=mask)
+    print("\n=== With Mask ===")
+    print("Head 1 weights:", attn_weights2[0, 0, 0].tolist())
+    print("Head 2 weights:", attn_weights2[0, 1, 0].tolist())
+```
+
+### 7.4 改造成 CasualSelfAttention
+我们抛弃掉自己创建的注意力机制，改用 PyTorch 提供的实现，同时把整体的代码适配 miniGPT 的模型上。
+
+```python
+import torch
+import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional
+from dataclasses import dataclass
 
 
 @dataclass
@@ -443,7 +693,7 @@ class GPTConfig:
     n_head: int = 8  # 多头注意力头数（必须整除 n_embd）
     n_layer: int = 6  # Transformer block 层数
     dropout: float = 0.1  # 所有 dropout 层的丢弃率
-    block_size: int = 128  # 最大上下文长度（位置编码最大支持长度）
+    block_size: int = 256  # 最大上下文长度（位置编码最大支持长度）
     vocab_size: int = 4825  # 词表大小（根据实际 tokenizer 决定
 
 
@@ -463,7 +713,7 @@ class CausalSelfAttention(nn.Module):
         self.out_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
 
         # 注意力输出的残差连接后加 dropout
-        self.resid_dropput = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
 
     def forward(
         self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None
@@ -494,6 +744,7 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.config.n_head, self.head_dim).transpose(1, 2)
 
         # === 步骤3: 构建复合注意力掩码 ===
+
         attn_mask = None
         if attention_mask is not None:
             # padding 掩码: [B, T] -> bool
@@ -513,17 +764,17 @@ class CausalSelfAttention(nn.Module):
             # 逻辑与：只有同时满足“非 padding”和“在左侧”才为 True
             attn_mask = causal_mask & key_padding_mask  # [B, 1, T, T]
 
-            # === 步骤4: 高效注意力计算 ===
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=attn_mask,
-                dropout_p=self.config.dropout if self.training else 0,
-                is_causal=False,  # NOTE：我们已手动构建因果掩码，故设为 False
-            )
+        # === 步骤4: 高效注意力计算 ===
+        y = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=self.config.dropout if self.training else 0,
+            is_causal=False,  # NOTE：我们已手动构建因果掩码，故设为 False
+        )
 
-            # 输出 y: [B, n_head, T, head_dim]
+        # 输出 y: [B, n_head, T, head_dim]
 
         # === 步骤5: 合并多头并投影 ===
         # 转置回 [B, T, n_head, head_dim] -> 合并最后两维 -> [B, T, C]
@@ -533,6 +784,55 @@ class CausalSelfAttention(nn.Module):
         return y
 
 
+# ========================
+# 测试代码
+# ========================
+if __name__ == "__main__":
+    torch.manual_seed(42)
+
+    # 配置
+    config = GPTConfig(n_embd=8, n_head=2, dropout=0.0)
+
+    # 创建模块
+    attn = CausalSelfAttention(config)
+
+    # 输入：batch=2, seq_len=5, emb=8
+    x = torch.randn(2, 5, 8)
+
+    # attention_mask: 第一个样本有效长度=3，第二个=4
+    attention_mask = torch.tensor(
+        [[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]
+    )  # 1=有效, 0=padding
+
+    # 前向传播
+    output = attn(x, attention_mask=attention_mask)
+
+    print("Input shape:", x.shape)
+    print("Output shape:", output.shape)
+    print("Output (first sample, first token):", output[0, 0].detach().numpy())
+
+    # 验证因果性：检查是否只 attend 到左侧
+    # 手动计算 attention weights（仅用于验证，非必需）
+    with torch.no_grad():
+        qkv = attn.qkv_proj(x)
+        q, k, _ = qkv.chunk(3, dim=-1)
+        q = q.view(2, 5, 2, 4).transpose(1, 2)
+        k = k.view(2, 5, 2, 4).transpose(1, 2)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (4**0.5)  # [2, 2, 5, 5]
+        # 应用因果掩码（下三角）
+        causal_mask = torch.tril(torch.ones(5, 5, dtype=torch.bool))
+        scores_masked = scores.masked_fill(~causal_mask, float("-inf"))
+        attn_weights = F.softmax(scores_masked, dim=-1)
+        print("\nAttention weights for head 0, sample 0:")
+        print(attn_weights[0, 0].numpy())
+        # 应该是下三角，且每行和为1
+```
+
+### 7.5 构建完整的GPT模型
+剩下的模型结构相对简单，这里就不专门介绍了，我们直接构建整体的GPT模型。
+
+**前馈神经网络MLP层**
+```python
 class MLP(nn.Module):
     """
     前馈神经网络（Feed-Forward Network, FFN）
@@ -559,8 +859,10 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         x = self.dropout(x)
         return x
+```
 
-
+**Transformer 解码器块**
+```python
 class Block(nn.Module):
     """
     Transformer 解码器块（Decoder Block）
@@ -590,8 +892,10 @@ class Block(nn.Module):
         # MLP 子层（带残差连接）
         x = x + self.mlp(self.ln_2(x))
         return x
+```
 
-
+**Transformer 结构**
+```python
 class Transformer(nn.Module):
     """
     包含：
@@ -656,8 +960,10 @@ class Transformer(nn.Module):
         # === 最终 LayerNorm ===
         x = self.ln_f(x)
         return x
+```
 
-
+**完整的GPT模型**
+```python
 class GPTLMHeadModel(nn.Module):
     """
     完整的 GPT 语言模型（含语言建模头）
@@ -719,7 +1025,39 @@ class GPTLMHeadModel(nn.Module):
         return logits
 ```
 
-## 7. 模型训练
+构建好后，我们看一下模型的整体情况：
+```python
+GPTLMHeadModel(
+  (transformer): Transformer(
+    (wte): Embedding(4825, 768)
+    (wpe): Embedding(256, 768)
+    (drop): Dropout(p=0.1, inplace=False)
+    (blocks): ModuleList(
+      (0-5): 6 x Block(
+        (ln_1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+        (attn): CausalSelfAttention(
+          (qkv_proj): Linear(in_features=768, out_features=2304, bias=True)
+          (out_proj): Linear(in_features=768, out_features=768, bias=False)
+          (resid_dropout): Dropout(p=0.1, inplace=False)
+        )
+        (ln_2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+        (mlp): MLP(
+          (c_fc): Linear(in_features=768, out_features=3072, bias=False)
+          (c_proj): Linear(in_features=3072, out_features=768, bias=False)
+          (dropout): Dropout(p=0.1, inplace=False)
+        )
+      )
+    )
+    (ln_f): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
+  )
+  (lm_head): Linear(in_features=768, out_features=4825, bias=False)
+)
+```
+整体的参数量是 ~46.4M，相比于 GPT-2（124M） 还是小很多。
+
+## 8. GPT 模型训练
+这部分仅做基础训练，因此没有进行大量优化。
+
 ```python
 import torch
 from minigpt.qa_dataset import QADataset
@@ -849,7 +1187,7 @@ def main():
 
     # 超参数
     max_length = 128
-    batch_size = 32
+    batch_size = 64
     lr = 1e-4
     epochs = 15
 
@@ -912,15 +1250,119 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 ```
 
-```bash
-python ./minigpt/train.py
+> 💡 在上面的batch_size
+
+## 9. 模型推理
+### 9.1 为GPT添加generate方法
+为了更加方便使用，且符合 Huggingface Transformer 库的标准范式，这里将 `generate` 方法补充添加到 `GPTLMHeadModel` 模型中。
+
+```python
+def generate(
+    self,
+    input_ids: torch.Tensor,
+    max_new_tokens: int = 20,
+    stop_token_ids: Optional[Union[int, List[int]]] = None,
+    temperature: float = 1.0,
+    top_k: Optional[int] = None,
+    do_sample: bool = False,
+) -> torch.Tensor:
+    """
+    自回归文本生成方法（支持多种解码策略）
+
+    Args:
+        input_ids (torch.Tensor):
+            初始输入 token IDs，形状 [batch_size, seq_len]
+        max_new_tokens (int):
+            最多生成的新 token 数量
+        stop_token_ids (int or List[int], optional):
+            遇到这些 token 时提前停止生成（如 <eos>）。每个样本独立判断是否停止。
+        temperature (float):
+            采样温度（>1 更随机，<1 更确定），仅在 do_sample=True 时生效
+        top_k (int, optional):
+            限制采样只在概率最高的 k 个 token 中进行
+        do_sample (bool):
+            是否使用随机采样（False 表示 greedy 解码）
+
+    Returns:
+        generated_ids (torch.Tensor):
+            完整生成序列，形状 [batch_size, seq_len + actual_new_tokens]
+            注意：不同样本可能生成不同长度，但返回张量是统一右填充（用最后一个有效 token 填充），
+            若需严格截断，请在调用后按 stop token 手动处理。
+    """
+    self.eval()
+    device = input_ids.device
+    B, T = input_ids.shape
+
+    # === 处理停止 token ===
+    stop_tokens = set()
+    if stop_token_ids is not None:
+        if isinstance(stop_token_ids, int):
+            stop_tokens.add(stop_token_ids)
+        else:
+            stop_tokens.update(stop_token_ids)
+
+    # 转为 GPU tensor 用于向量化比较（避免 .item() 同步）
+    stop_tensor = None
+    if stop_tokens:
+        stop_tensor = torch.tensor(list(stop_tokens), device=device, dtype=input_ids.dtype)  # [S]
+
+    # === 初始化生成状态 ===
+    generated = input_ids.clone()  # [B, T]
+    finished = torch.zeros(B, dtype=torch.bool, device=device)  # [B]，记录每个样本是否已完成
+
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            # 提前终止：所有样本都已完成 或 超出上下文窗口
+            if finished.all() or generated.size(1) >= self.config.block_size:
+                break
+
+            # 获取当前 logits（只取最后一个位置）
+            logits = self(generated)  # [B, T_curr, vocab_size]
+            next_token_logits = logits[:, -1, :]  # [B, vocab_size]
+
+            # === 解码策略 ===
+            if do_sample:
+                # 温度缩放（确保 temperature > 0）
+                if temperature <= 0:
+                    raise ValueError("temperature must be > 0")
+                next_token_logits = next_token_logits / temperature
+
+                # Top-k 过滤
+                if top_k is not None and top_k > 0:
+                    k = min(top_k, next_token_logits.size(-1))
+                    # 获取第 k 大的值作为阈值
+                    values, _ = torch.topk(next_token_logits, k, dim=-1)
+                    threshold = values[:, -1:]  # [B, 1]
+                    # 将低于阈值的 logits 设为 -inf
+                    next_token_logits = torch.where(
+                        next_token_logits < threshold,
+                        torch.full_like(next_token_logits, float('-inf')),
+                        next_token_logits
+                    )
+
+                # 采样
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)  # [B, 1]
+            else:
+                # Greedy decoding
+                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)  # [B, 1]
+
+            # === 对已完成的样本，不更新 token（用原序列最后一个 token 占位）===
+            # 注意：也可以用 pad_token，但模型未定义 pad_token_id，故复用 last token
+            last_token = generated[:, -1:].clone()  # [B, 1]
+            next_token = torch.where(finished.unsqueeze(1), last_token, next_token)
+
+            # 拼接到生成序列
+            generated = torch.cat([generated, next_token], dim=1)  # [B, T+1]
+
+            # === 更新 finished 状态（仅当设置了 stop_tokens 时）===
+            if stop_tensor is not None:
+                # 检查新生成的 token 是否在 stop_tokens 中 → [B]
+                is_stop = (next_token == stop_tensor).any(dim=1)  # 广播比较 [B,1] vs [S] → [B,S] → any → [B]
+                finished = finished | is_stop
+
+    return generated
 ```
 
-## 8. 生成回答
-
-
-## X. Qwen3
-Qwen3的代码结构学习，详见 minigpt/qwen3 代码。

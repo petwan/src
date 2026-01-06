@@ -17,7 +17,7 @@ class GPTConfig:
     n_head: int = 8  # 多头注意力头数（必须整除 n_embd）
     n_layer: int = 6  # Transformer block 层数
     dropout: float = 0.1  # 所有 dropout 层的丢弃率
-    block_size: int = 128  # 最大上下文长度（位置编码最大支持长度）
+    block_size: int = 256  # 最大上下文长度（位置编码最大支持长度）
     vocab_size: int = 4825  # 词表大小（根据实际 tokenizer 决定
 
 
@@ -68,6 +68,7 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.config.n_head, self.head_dim).transpose(1, 2)
 
         # === 步骤3: 构建复合注意力掩码 ===
+
         attn_mask = None
         if attention_mask is not None:
             # padding 掩码: [B, T] -> bool
@@ -300,9 +301,9 @@ class GPTLMHeadModel(nn.Module):
         temperature: float = 1.0,
         top_k: Optional[int] = None,
         do_sample: bool = False,
-    ):
+    ) -> torch.Tensor:
         """
-        标准自回归文本生成方法（支持多种解码策略）
+        自回归文本生成方法（支持多种解码策略）
 
         Args:
             input_ids (torch.Tensor):
@@ -310,22 +311,25 @@ class GPTLMHeadModel(nn.Module):
             max_new_tokens (int):
                 最多生成的新 token 数量
             stop_token_ids (int or List[int], optional):
-                遇到这些 token 时提前停止生成（如 <sep>, <eos>）
+                遇到这些 token 时提前停止生成（如 <eos>）。每个样本独立判断是否停止。
             temperature (float):
                 采样温度（>1 更随机，<1 更确定），仅在 do_sample=True 时生效
             top_k (int, optional):
                 限制采样只在概率最高的 k 个 token 中进行
             do_sample (bool):
                 是否使用随机采样（False 表示 greedy 解码）
-            pad_token_id (int, optional):
-                用于填充（目前未使用，但保留接口一致性）
 
         Returns:
             generated_ids (torch.Tensor):
-                完整生成序列，形状 [batch_size, seq_len + new_tokens]
+                完整生成序列，形状 [batch_size, seq_len + actual_new_tokens]
+                注意：不同样本可能生成不同长度，但返回张量是统一右填充（用最后一个有效 token 填充），
+                若需严格截断，请在调用后按 stop token 手动处理。
         """
         self.eval()
+        device = input_ids.device
+        B, T = input_ids.shape
 
+        # === 处理停止 token ===
         stop_tokens = set()
         if stop_token_ids is not None:
             if isinstance(stop_token_ids, int):
@@ -333,29 +337,47 @@ class GPTLMHeadModel(nn.Module):
             else:
                 stop_tokens.update(stop_token_ids)
 
-        # 初始化生成序列
-        generated = input_ids.clone()
+        # 转为 GPU tensor 用于向量化比较（避免 .item() 同步）
+        stop_tensor = None
+        if stop_tokens:
+            stop_tensor = torch.tensor(
+                list(stop_tokens), device=device, dtype=input_ids.dtype
+            )  # [S]
+
+        # === 初始化生成状态 ===
+        generated = input_ids.clone()  # [B, T]
+        finished = torch.zeros(
+            B, dtype=torch.bool, device=device
+        )  # [B]，记录每个样本是否已完成
 
         with torch.no_grad():
             for _ in range(max_new_tokens):
-                # 防止超出模型最大上下文长度
-                if generated.size(1) > self.config.block_size:
+                # 提前终止：所有样本都已完成 或 超出上下文窗口
+                if finished.all() or generated.size(1) >= self.config.block_size:
                     break
 
-                # 获取 logits（只关心最后一个位置）
-                logits = self(generated)  # [B, T, V]
-                next_token_logits = logits[:, -1, :]  # [B, V]
+                # 获取当前 logits（只取最后一个位置）
+                logits = self(generated)  # [B, T_curr, vocab_size]
+                next_token_logits = logits[:, -1, :]  # [B, vocab_size]
 
+                # === 解码策略 ===
                 if do_sample:
-                    # 应用温度
+                    # 温度缩放（确保 temperature > 0）
+                    if temperature <= 0:
+                        raise ValueError("temperature must be > 0")
                     next_token_logits = next_token_logits / temperature
 
                     # Top-k 过滤
                     if top_k is not None and top_k > 0:
                         k = min(top_k, next_token_logits.size(-1))
-                        v, _ = torch.topk(next_token_logits, k)
-                        next_token_logits[next_token_logits < v[:, [-1]]] = -float(
-                            "inf"
+                        # 获取第 k 大的值作为阈值
+                        values, _ = torch.topk(next_token_logits, k, dim=-1)
+                        threshold = values[:, -1:]  # [B, 1]
+                        # 将低于阈值的 logits 设为 -inf
+                        next_token_logits = torch.where(
+                            next_token_logits < threshold,
+                            torch.full_like(next_token_logits, float("-inf")),
+                            next_token_logits,
                         )
 
                     # 采样
@@ -367,15 +389,28 @@ class GPTLMHeadModel(nn.Module):
                         next_token_logits, dim=-1, keepdim=True
                     )  # [B, 1]
 
-                # 拼接新 token
-                generated = torch.cat([generated, next_token], dim=1)
+                # === 对已完成的样本，不更新 token（用原序列最后一个 token 占位）===
+                # 注意：也可以用 pad_token，但模型未定义 pad_token_id，故复用 last token
+                last_token = generated[:, -1:].clone()  # [B, 1]
+                next_token = torch.where(finished.unsqueeze(1), last_token, next_token)
 
-                # 检查是否所有样本都已触发停止条件
-                if stop_tokens:
-                    # 检查最新生成的 token 是否在 stop_tokens 中
-                    latest_token = next_token.squeeze(-1)  # [B]
-                    should_stop = all(tok.item() in stop_tokens for tok in latest_token)
-                    if should_stop:
-                        break
+                # 拼接到生成序列
+                generated = torch.cat([generated, next_token], dim=1)  # [B, T+1]
+
+                # === 更新 finished 状态（仅当设置了 stop_tokens 时）===
+                if stop_tensor is not None:
+                    # 检查新生成的 token 是否在 stop_tokens 中 → [B]
+                    is_stop = (next_token == stop_tensor).any(
+                        dim=1
+                    )  # 广播比较 [B,1] vs [S] → [B,S] → any → [B]
+                    finished = finished | is_stop
 
         return generated
+
+
+if __name__ == "__main__":
+    config = GPTConfig()
+    model = GPTLMHeadModel(config)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(model)
+    print("total_params: ", total_params)

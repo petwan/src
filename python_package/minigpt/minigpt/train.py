@@ -125,7 +125,7 @@ def main():
     vocab_path = "./data/vocab.json"
 
     # 超参数
-    max_length = 128
+    max_length = 140
     batch_size = 64
     lr = 1e-4
     epochs = 15
