@@ -15,7 +15,7 @@ export default defineConfig({
     image: {
       lazyLoading: true,
     },
-    lineNumbers: true,
+    lineNumbers: false,
   },
 
   // vite

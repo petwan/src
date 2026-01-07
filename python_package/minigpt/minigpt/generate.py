@@ -48,7 +48,7 @@ def generate(model, tokenizer, question, max_length, device):
 
 def main():
     vocab_path = "./data/vocab.json"
-    max_length = 120  # 注意：现在这个值用于控制总长度（见上）
+    max_length = 140  # 注意：现在这个值用于控制总长度（见上）
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_path = "output/best_model.pth"
 

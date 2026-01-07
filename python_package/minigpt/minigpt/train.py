@@ -1,3 +1,4 @@
+from sympy import use
 import torch
 from minigpt.qa_dataset import QADataset
 from minigpt.tokenizer import Tokenizer
@@ -9,7 +10,7 @@ from minigpt.model import GPTLMHeadModel, GPTConfig
 from tqdm import tqdm
 
 
-def train_epoch(model, train_loader, optimizer, criterion, device):
+def train_epoch(model, train_loader, optimizer, criterion, device, scaler, use_amp):
     model.train()
     total_loss = 0
     num_batches = len(train_loader)
@@ -27,12 +28,18 @@ def train_epoch(model, train_loader, optimizer, criterion, device):
         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
         targets = batch["targets"].to(device, non_blocking=True)
 
-        optimizer.zero_grad()
-        logits = model(input_ids=input_ids, attention_mask=attention_mask)
-        loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type=device.type, enabled=use_amp):
+            logits = model(input_ids=input_ids, attention_mask=attention_mask)
+            loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
 
-        loss.backward()
-        optimizer.step()
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         total_loss += loss.item()
         progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
@@ -41,7 +48,7 @@ def train_epoch(model, train_loader, optimizer, criterion, device):
 
 
 @torch.no_grad()
-def validate(model, val_loader, criterion, device):
+def validate(model, val_loader, criterion, device, use_amp):
     model.eval()
     total_loss = 0
     num_batches = len(val_loader)
@@ -59,8 +66,9 @@ def validate(model, val_loader, criterion, device):
         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
         targets = batch["targets"].to(device, non_blocking=True)
 
-        logits = model(input_ids=input_ids, attention_mask=attention_mask)
-        loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
+        with torch.autocast(device_type=device.type, enabled=use_amp):
+            logits = model(input_ids=input_ids, attention_mask=attention_mask)
+            loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
         total_loss += loss.item()
         progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
 
@@ -88,6 +96,8 @@ def train_model(
     num_epochs,
     model_output_dir,
     writer,
+    scaler,
+    use_amp,
 ):
     os.makedirs(model_output_dir, exist_ok=True)
     best_val_loss = float("inf")
@@ -96,11 +106,13 @@ def train_model(
         print(f"\nEpoch {epoch}/{num_epochs}")
 
         # Training
-        train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
+        train_loss = train_epoch(
+            model, train_loader, optimizer, criterion, device, scaler, use_amp
+        )
         print(f"  Train Loss: {train_loss:.4f}")
 
         # Validation
-        val_loss = validate(model, val_loader, criterion, device)
+        val_loss = validate(model, val_loader, criterion, device, use_amp)
         print(f"  Val Loss:   {val_loss:.4f}")
 
         # Log to TensorBoard
@@ -140,6 +152,11 @@ def main():
     tokenizer = Tokenizer(vocab_path)
     config = GPTConfig(vocab_size=tokenizer.get_vocab_size())
     model = GPTLMHeadModel(config).to(device)
+    if hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model)
+        except Exception as e:
+            print(f"⚠️  torch.compile failed, falling back. Error: {e}")
 
     # 数据集
     train_dataset = QADataset(train_path, tokenizer, max_length)
@@ -166,6 +183,8 @@ def main():
     # 优化器与损失函数
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
+    use_amp = device.type == "cuda"
+    scaler = torch.amp.GradScaler(enabled=use_amp)
 
     # TensorBoard 日志
     writer = SummaryWriter("runs/minigpt")
@@ -181,6 +200,8 @@ def main():
         num_epochs=epochs,
         model_output_dir="output",
         writer=writer,
+        scaler=scaler,
+        use_amp=use_amp,
     )
 
     writer.close()

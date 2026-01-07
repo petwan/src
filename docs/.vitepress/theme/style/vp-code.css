@@ -1,10 +1,11 @@
 /* 启用代码块换行 */
-/* .vp-doc pre,
+.vp-doc pre,
 .vp-doc pre code {
   white-space: pre-wrap !important;
   word-break: break-word !important;
   overflow-x: hidden !important;
-} */
+}
+
 
 /* 代码块：增加留空边距 增加阴影 */
 .vp-doc div[class*=language-] {

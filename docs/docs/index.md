@@ -21,6 +21,10 @@ hero:
 
 <BlogList />
 
+- [ ] ViT 学习笔记， https://modelscope.cn/models/iic/cv_vit-base_image-classification_Dailylife-labels/summary
+
+
+
 1. 基于vue的交互演示
 2. 微信小程序开发
 3. 微信小游戏开发
