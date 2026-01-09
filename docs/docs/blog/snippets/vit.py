@@ -1,20 +1,3 @@
----
-title: ⚡ViT学习笔记
-date: 2026-01-07
-tags: [Pytorch]
-description: 使用Pytorch学习ViT模型的实现，并在 CIFAR-10 数据集上进行训练，可视化attention权重。
-draft: false
----
-
-# ⚡ViT学习笔记
-
-> 目标：用 PyTorch 从头实现一个能在 CIFAR-10 上训练的 ViT，并可视化它"看"图像的方式。完整的代码在 `./snippets/vit.py`。
-
-**核心思想**：ViT将输入图片分为多个patch，然后将每个patch投影为固定长度的向量送入Transformer Encoder中，后续Encoder的操作和原始的Transformer一致。但因为是对图片进行分类，因此在输入序列中加入一个特殊的token，该token对应的输出即为最后的类别预测。
-
-## 1. 实现Patch Embedding
-
-```python
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -55,77 +38,6 @@ class PatchEmbedding(nn.Module):
         return x
 
 
-# --- 测试一下这个模块 ---
-if __name__ == "__main__":
-    # 创建一个假的 32x32 RGB 图像（batch=1）
-    fake_image = torch.randn(1, 3, 32, 32)
-
-    # 初始化 PatchEmbedding
-    patch_embed = PatchEmbedding(img_size=32, patch_size=4, embed_dim=128)
-
-    # 前向传播
-    patches = patch_embed(fake_image)
-
-    print("输入图像形状:", fake_image.shape)  # [1, 3, 32, 32]
-    print("输出 patch 序列形状:", patches.shape)  # [1, 64, 128]
-```
-
-## 2. 加入 [CLS] Token 和 位置编码
-在序列开头加一个特殊的 [CLS] token，最后只用它的输出做分类！同时，因为 Transformer 不知道“顺序”，我们要告诉它每个 patch 在图中的位置。
-
-> 💡 这里为了省事，就先定义了 VisionTransformer 类，但仅实现了这节的内容，后面还会向这里添加模块。
-
-```python
-# 先实现Transformer Encoder之前的部分
-class VisionTransformer(nn.Module):
-    def __init__(self, img_size=32, patch_size=4, num_classes=10, embed_dim=128):
-        super().__init__()
-        self.img_size = img_size
-        self.patch_size = patch_size
-
-        self.patch_embed = PatchEmbedding(img_size, patch_size, embed_dim=embed_dim)
-        num_patches = self.patch_embed.num_patches  # 64
-
-        # [CLS] token: 可学习的参数，形状 [1, 1, embed_dim]
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-
-        # 位置编码：可学习的参数，形状 [1, num_patches+1, embed_dim]
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
-
-        # 初始化
-        torch.nn.init.normal_(self.cls_token, std=0.02)
-        torch.nn.init.normal_(self.pos_embed, std=0.02)
-
-    def forward(self, x):
-        x = self.patch_embed(x)  # → [1, 64, 128]
-
-        # 添加 [CLS] token
-        cls_token = self.cls_token.expand(x.size(0), -1, -1)  # → [1, 1, 128]
-        x = torch.cat((cls_token, x), dim=1)  # → [1, 65, 128]
-
-        # 添加位置编码
-        x = x + self.pos_embed  # → [1, 65, 128]
-
-        return x
-
-if __name__ == "__main__":
-    # 创建一个假的 32x32 RGB 图像（batch=1）
-    fake_image = torch.randn(1, 3, 32, 32)
-
-    # 初始化 PatchEmbedding
-    vit = VisionTransformer(img_size=32, patch_size=4, embed_dim=128)
-
-    # 前向传播
-    patches_with_cls = vit(fake_image)
-
-    print("输入图像形状:", fake_image.shape)  # [1, 3, 32, 32]
-    print("输出包含[CLS] token的序列形状:", patches_with_cls.shape)  # [1, 65, 128]
-```
-
-## 3. 添加 Transformer Encoder
-先构建一个 `TransformerBlock` 模块
-
-```python
 class TransformerBlock(nn.Module):
     def __init__(self, embed_dim=128, num_heads=4, dropout=0.1):
         super().__init__()
@@ -150,18 +62,14 @@ class TransformerBlock(nn.Module):
 
     def forward_with_attention(self, x):
         q = k = v = self.norm1(x)
-        attn_out, attn_weights = self.attn(q, k, v, need_weights=True, average_attn_weights=False)
+        attn_out, attn_weights = self.attn(
+            q, k, v, need_weights=True, average_attn_weights=False
+        )
         x = x + attn_out
         x = x + self.mlp(self.norm2(x))
-        return x, attn_weights  # [B, num_heads, N, N]
+        return x, attn_weights
 
-```
 
-## 4. 构建完整的 Vision Transformer
-
-将 `TransformerBlock` 模块堆叠起来，并添加一个全连接层作为分类器。
-
-```python
 class VisionTransformer(nn.Module):
     def __init__(
         self,
@@ -169,9 +77,9 @@ class VisionTransformer(nn.Module):
         patch_size=4,
         num_classes=10,
         embed_dim=128,
-        depth=6,          # Transformer 层数 # [!code ++]
-        num_heads=4,      # 注意力头数 [!code ++]
-        dropout=0.1       # dropout [!code ++]
+        depth=6,  # Transformer 层数 # [!code ++]
+        num_heads=4,  # 注意力头数 [!code ++]
+        dropout=0.1,  # dropout [!code ++]
     ):
         super().__init__()
         self.img_size = img_size
@@ -179,18 +87,21 @@ class VisionTransformer(nn.Module):
 
         self.patch_embed = PatchEmbedding(img_size, patch_size, embed_dim=embed_dim)
         num_patches = self.patch_embed.num_patches
-        
+
         # [CLS] token: 可学习的参数，形状 [1, 1, embed_dim]
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
 
         # 位置编码：可学习的参数，形状 [1, num_patches+1, embed_dim]
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
-        
-        # --- 新增：Transformer Encoder --- 
-        self.dropout = nn.Dropout(dropout) # [!code ++]
-        self.transformer_blocks = nn.ModuleList([ # [!code ++]
-            TransformerBlock(embed_dim, num_heads, dropout) for _ in range(depth) # [!code ++]
-        ]) # [!code ++]
+
+        # --- 新增：Transformer Encoder ---
+        self.dropout = nn.Dropout(dropout)  # [!code ++]
+        self.transformer_blocks = nn.ModuleList(
+            [  # [!code ++]
+                TransformerBlock(embed_dim, num_heads, dropout)
+                for _ in range(depth)  # [!code ++]
+            ]
+        )  # [!code ++]
 
         # --- 新增：Classification Head --- # [!code ++]
         self.head = nn.Linear(embed_dim, num_classes)
@@ -204,14 +115,13 @@ class VisionTransformer(nn.Module):
         cls_token = self.cls_token.repeat(x.size(0), 1, 1)
         x = torch.cat((cls_token, x), dim=1)
         x = x + self.pos_embed
-        
-        # --- 新增：通过 Transformer Encoder --- 
-        x = self.dropout(x) # [!code ++]
-        for block in self.transformer_blocks: # [!code ++]
-            x = block(x) # [!code ++]
-        return self.head(x[:,0])  # 分类结果 # [!code ++]
 
-    # NOTE: 获取最后一层注意力权重
+        # --- 新增：通过 Transformer Encoder ---
+        x = self.dropout(x)  # [!code ++]
+        for block in self.transformer_blocks:  # [!code ++]
+            x = block(x)  # [!code ++]
+        return self.head(x[:, 0])  # 分类结果 # [!code ++]
+
     def forward_get_last_attention(self, x):
         x = self.patch_embed(x)
         cls_tokens = self.cls_token.expand(x.size(0), -1, -1)
@@ -224,73 +134,43 @@ class VisionTransformer(nn.Module):
                 x = block(x)
             else:
                 x, attn_weights = block.forward_with_attention(x)
-        return attn_weights  # [B, num_heads, N, N]
-```
+        return attn_weights  # [B, N, N]
 
-测试一下模型的输出shape：
 
-```python
-if __name__ == "__main__":
-    # 创建一个假的 32x32 RGB 图像（batch=1）
-    fake_image = torch.randn(1, 3, 32, 32)
-
-    # 初始化 PatchEmbedding
-    vit = VisionTransformer(img_size=32, patch_size=4, embed_dim=128)
-
-    # 前向传播
-    patches_with_cls = vit(fake_image)
-
-    print("输入图像形状:", fake_image.shape)  # [1, 3, 32, 32]
-    print("输出分类特征:", patches_with_cls.shape)  # [1, 10]
-```
-
-## 5. 加载数据集 CIFAR-10
-```python
-# 对于训练数据，做一些augmentation
 def get_dataloaders(batch_size=64):
-    transform_train = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-    ])
+    transform_train = transforms.Compose(
+        [
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
+        ]
+    )
 
-    transform_test = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-    ])
+    transform_test = transforms.Compose(
+        [
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
+        ]
+    )
 
-    trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
-    testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
+    trainset = datasets.CIFAR10(
+        root="./data", train=True, download=True, transform=transform_train
+    )
+    testset = datasets.CIFAR10(
+        root="./data", train=False, download=True, transform=transform_test
+    )
 
-    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
-    testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
+    trainloader = DataLoader(
+        trainset, batch_size=batch_size, shuffle=True, num_workers=2
+    )
+    testloader = DataLoader(
+        testset, batch_size=batch_size, shuffle=False, num_workers=2
+    )
 
     return trainloader, testloader
 
 
-if __name__ == "__main__":
-    _, testloader = get_dataloaders(batch_size=1)
-    image, label = next(iter(testloader))
-    print("图像形状:", image.shape)  # [1, 3, 32, 32]
-    print("标签:", label.item())  # 0～9
-
-    # 反归一化显示
-    img = image[0].permute(1, 2, 0).numpy()
-    img = img * np.array([0.2470, 0.2435, 0.2616]) + np.array([0.4914, 0.4822, 0.4465])
-    plt.imshow(np.clip(img, 0, 1))
-    plt.title(f"CIFAR-10 label: {label.item()}")
-    plt.show()
-
-```
-<Image 
-src='assets/cifra-10-example.png'
-width=80%
-/>
-
-## 6. 训练模型
-构建训练和验证的函数：
-```python
 def train_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
     total_loss = 0.0
@@ -335,17 +215,15 @@ def validate(model, dataloader, criterion, device):
     avg_loss = total_loss / len(dataloader)
     acc = 100.0 * correct / total
     return avg_loss, acc
-```
 
-实现整体的训练过程：
-```python
+
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🚀 Using device: {device}")
 
     # 超参数
     batch_size = 64
-    epochs = 10
+    epochs = 15
     lr = 3e-4
 
     # 数据
@@ -379,25 +257,17 @@ def main():
         )
         val_loss, val_acc = validate(model, val_loader, criterion, device)
 
+        print(f"📈 Train Loss: {train_loss:.4f}, Acc: {train_acc:.2f}%")
+        print(f"📉 Val   Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%")
+
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(model.state_dict(), "vit_cifar10.pth")
             print("✅ Best model saved as 'vit_cifar10.pth'")
 
-
-        print(f"📈 Train Loss: {train_loss:.4f}, Acc: {train_acc:.2f}%")
-        print(f"📉 Val   Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%")
-
     print("\n✅ Training completed!")
 
 
-if __name__ == "__main__":
-    main()
-```
-训练结束后，模型权重保存在 `vit_cifar10.pth` 中。
-
-## 7. 可视化 attention
-```python
 def visualize_attention(
     checkpoint_path="vit_cifar10.pth", idx=0, device=None, save_path="attention_vis.png"
 ):
@@ -447,9 +317,7 @@ def visualize_attention(
 
     # 前向传播获取最后一层 attention
     with torch.no_grad():
-        attn_weights = model.forward_get_last_attention(
-            image.unsqueeze(0).to(device)
-        )  # [1, H, N, N]
+        attn_weights = model.forward_get_last_attention(image.unsqueeze(0).to(device))
 
     # 提取 [CLS] token 对所有 patch 的 attention（平均所有头）
     cls_attn = attn_weights[0, :, 0, 1:].mean(dim=0).cpu()
@@ -495,11 +363,8 @@ def visualize_attention(
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.show()
     print(f"✅ Attention visualization saved to '{save_path}'")
-```
 
 
-修改一下入口函数：
-```python
 if __name__ == "__main__":
     import argparse
 
@@ -515,20 +380,3 @@ if __name__ == "__main__":
         visualize_attention(
             checkpoint_path="vit_cifar10.pth", idx=args.idx, device=device
         )
-```
-
-运行 `python ViT.py --mode vis --idx 30` 可以可视化第 30 张图片的注意力。
-
-<Image 
-src='assets/cifra-10_idx_30_attention.png'
-card='true'
-/>
-
-## 8. 思考
-训练后，模型的准确率大概率低于 ResNet（比如 ～75% vs ResNet-18 的 ～94%），这个不是代码的问题，而是架构本身的差异导致的。
-
-ViT 需要大量数据（如 ImageNet-1k 或 JFT-300M）才能有效学习 patch 间的位置关系和语义组合。在小数据上容易过拟合或收敛缓慢。
-
-另外，在这个例子中，我使用了可学习的1D位置编码，但是这种编码忽略了2D空间的结构信息。
-
-如果想要进一步学习，可以考虑：使用ResNet或其他CNN模型作为 teacher，通过 token-level 蒸馏提升VisionTransformer的性能。

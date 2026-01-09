@@ -21,9 +21,7 @@ hero:
 
 <BlogList />
 
-- [ ] ViT 学习笔记， https://modelscope.cn/models/iic/cv_vit-base_image-classification_Dailylife-labels/summary
-
-
+- [text](FastAPI_PRD.md)
 
 1. 基于vue的交互演示
 2. 微信小程序开发
