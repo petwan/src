@@ -1,0 +1,18 @@
+{
+    "package_name": "my_python_package",
+    "package_version": "0.1.0",
+    "package_description": "A Python package using Poetry",
+    "author_name": "Your Name",
+    "author_email": "your.email@example.com",
+    "github_user": "your-github-username",
+    "license": [
+        "MIT",
+        "BSD-3-Clause",
+        "Apache-2.0",
+        "GNU GPL v3.0"
+    ],
+    "python_version": "3.10",
+    "_copy_without_render": [
+        "*.py-tmpl"
+    ]
+}
